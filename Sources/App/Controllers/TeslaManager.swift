@@ -34,7 +34,7 @@ actor TeslaManager {
     
     private var state: State = .idle
     
-    private var mqttConnectTask: Task<Void, Never>?
+    private var mqttConnectCancellable: MQTTCancellable?
     private var mqttCommandTask: Task<Void, Never>?
     
     // MARK: - Lifecycle
@@ -89,10 +89,9 @@ actor TeslaManager {
             state = .idle
         }
         
-        mqttConnectTask?.cancel()
+        mqttConnectCancellable?.cancel()
         mqttCommandTask?.cancel()
         
-        await mqttConnectTask?.value
         await mqttCommandTask?.value
         
         try? await mqttClient.disconnect(
@@ -100,22 +99,20 @@ actor TeslaManager {
             sessionExpiry: .atClose
         )
         
-        mqttConnectTask = nil
+        mqttConnectCancellable = nil
         mqttCommandTask = nil
     }
     
     private func setupMQTT() {
-        mqttConnectTask = Task {
-            for await response in mqttClient.connectPublisher.values {
-                if !response.isSessionPresent {
-                    Task {
-                        try await mqttClient.subscribe(to: Self.vehicleCommandFilter)
-                    }
+        mqttConnectCancellable = mqttClient.whenConnected { [weak self] response in
+            if !response.isSessionPresent {
+                Task { [self] in
+                    try await self?.mqttClient.subscribe(to: Self.vehicleCommandFilter)
                 }
-                
-                Task {
-                    try await publishConnected()
-                }
+            }
+            
+            Task { [self] in
+                try await self?.publishConnected()
             }
         }
         
