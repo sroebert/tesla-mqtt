@@ -12,6 +12,16 @@ actor TeslaManager {
         case stopping
     }
     
+    private struct CommandRequest {
+        var vehicleId: Vehicle.ID
+        var commandId: VehicleCommand.ID
+        
+        var jsonData: Data
+        
+        var responseTopic: String?
+        var responseCorrelationData: Data?
+    }
+    
     // MARK: - Private Vars
     
     private static let mqttPrefix = "tesla-api"
@@ -123,24 +133,35 @@ actor TeslaManager {
         mqttCommandTask = Task {
             for await message in mqttClient.messages {
                 Task {
+                    application.logger.trace("Received command request", metadata: [
+                        "topic": .string(message.topic),
+                        "command": .string(message.payload.string ?? "")
+                    ])
+                    
+                    let request: CommandRequest
                     do {
-                        application.logger.trace("Received command", metadata: [
+                        request = try await parseRequest(from: message)
+                    } catch {
+                        application.logger.error("Failed to parse command request", metadata: [
                             "topic": .string(message.topic),
-                            "command": .string(message.payload.string ?? "")
+                            "command": .string(message.payload.string ?? ""),
+                            "error": "\(error)"
                         ])
-                        
-                        var command: String? = nil
-                        try await handleVehicleCommand(message, command: &command)
-                        await sendCommandResponse(for: message, command: command, error: nil)
+                        return
+                    }
+                    
+                    do {
+                        try await perform(request)
+                        await sendResponse(for: request, error: nil)
                         
                     } catch {
-                        application.logger.error("Failed to handle command", metadata: [
+                        application.logger.error("Failed to execute command", metadata: [
                             "topic": .string(message.topic),
                             "command": .string(message.payload.string ?? ""),
                             "error": "\(error)"
                         ])
                         
-                        await sendCommandResponse(for: message, command: nil, error: error)
+                        await sendResponse(for: request, error: error)
                     }
                 }
             }
@@ -166,7 +187,7 @@ actor TeslaManager {
     
     // MARK: - Commands
     
-    private func handleVehicleCommand(_ message: MQTTMessage, command: inout String?) async throws {
+    private func parseRequest(from message: MQTTMessage) async throws -> CommandRequest {
         let idComponent = message.topic
             .dropFirst(Self.mqttPrefix.count + 1)
             .prefix { $0 != "/" }
@@ -178,35 +199,44 @@ actor TeslaManager {
         guard
             let jsonString = message.payload.string,
             let jsonData = jsonString.data(using: .utf8),
-            let commandId = try? mqttJSONDecoder.decode(VehicleCommandId.self, from: jsonData)
+            let request = try? mqttJSONDecoder.decode(VehicleCommandRequest.self, from: jsonData)
         else {
             throw VehicleCommandParsingError.invalidPayload
         }
         
-        command = commandId.command
-        guard let commandType = Self.mqttCommands.first(where: { $0.id == commandId.command }) else {
+        return CommandRequest(
+            vehicleId: vehicleId,
+            commandId: request.commandId,
+            jsonData: jsonData,
+            responseTopic: message.properties.responseTopic,
+            responseCorrelationData: message.properties.correlationData
+        )
+    }
+    
+    private func perform(_ request: CommandRequest) async throws {
+        guard let commandType = Self.mqttCommands.first(where: { $0.id == request.commandId }) else {
             throw VehicleCommandParsingError.unknownCommand
         }
         
         guard
             let command = try? commandType.init(
-                jsonData: jsonData,
+                jsonData: request.jsonData,
                 decoder: mqttJSONDecoder
             )
         else {
             throw VehicleCommandParsingError.invalidCommandJSON
         }
         
-        try await command.run(vehicleId: vehicleId, api: api)
+        try await command.run(vehicleId: request.vehicleId, api: api)
     }
     
-    private func sendCommandResponse(for message: MQTTMessage, command: String?, error: Error?) async {
-        guard let responseTopic = message.properties.responseTopic else {
+    private func sendResponse(for request: CommandRequest, error: Error?) async {
+        guard let responseTopic = request.responseTopic else {
             return
         }
         
         var response = VehicleCommandResponse(
-            command: command,
+            commandId: request.commandId,
             success: error == nil
         )
         response.errorIdentifier = (error as? VehicleCommandError)?.identifier
@@ -223,7 +253,7 @@ actor TeslaManager {
             topic: responseTopic,
             payload: .string(responseJSON, contentType: "application/json"),
             properties: MQTTMessage.Properties(
-                correlationData: message.properties.correlationData
+                correlationData: request.responseCorrelationData
             )
         )
         try? await mqttClient.publish(responseMessage)
