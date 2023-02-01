@@ -49,7 +49,8 @@ struct TeslaTokenAPI {
         
         let response: ClientResponse
         do {
-            response = try await client.post(url(forPath: "token")) { request in
+            let headers = TeslaAPI.defaultHeaders
+            response = try await client.post(url(forPath: "token"), headers: headers) { request in
                 try request.content.encode(RefreshTokenRequest(refreshToken: refreshToken))
             }
         } catch {

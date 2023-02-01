@@ -32,7 +32,9 @@ struct TeslaAPI {
     
     private static let baseURL = "https://owner-api.teslamotors.com/"
     
-    static let userAgent = "TeslaApp/4.10.0"
+    static let defaultHeaders: HTTPHeaders = [
+        "User-Agent": "TeslaApp/4.10.0",
+    ]
     
     private let application: Application
     private let tokenAPI: TeslaTokenAPI
@@ -60,9 +62,13 @@ struct TeslaAPI {
         let accessToken = try await tokenAPI.accessToken
         
         let url = url(forPath: path)
-        var request = ClientRequest(method: method, url: url, headers: [:], body: nil)
+        var request = ClientRequest(
+            method: method,
+            url: url,
+            headers: Self.defaultHeaders,
+            body: nil
+        )
         
-        request.headers.replaceOrAdd(name: .userAgent, value: Self.userAgent)
         request.headers.bearerAuthorization = .init(token: accessToken.token)
         
         return request
