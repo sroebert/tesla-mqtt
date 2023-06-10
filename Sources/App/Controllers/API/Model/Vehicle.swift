@@ -8,7 +8,6 @@ struct Vehicle: Content, Identifiable {
     var vehicleId: UInt64
     
     var vin: String
-    var displayName: String
     
     var state: String
 }
